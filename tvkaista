@@ -5,7 +5,7 @@
 #
 # http://code.google.com/p/tvkaista-cli/
 #
-# Copyright (c) 2009-2010 Matti Pöllä
+# Copyright (c) 2009-2011 Matti Pöllä
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@ __author__ = "Matti Pöllä"
 __copyright__ = "Copyright 2009-2010, Matti Pöllä"
 __license__ = "GPL"
 __email__ = "mpo@iki.fi"
-__version__ = "0.65"
+__version__ = "0.66"
 
 import urllib
 import urllib2
@@ -85,6 +85,7 @@ formats = ['iTunes', 'flv', 'h264', 'ts']
 verbose = False
 debug = False
 prompt = False
+subs_only = False
 show = False
 getthumb = True
 reverse = False
@@ -127,7 +128,9 @@ class Program:
     def __init__(self, pid, ptit, plen, pdt):
         self.idn = pid
         self.length = int(plen)
-        self.title = ptit
+        self.title = ptit.replace(" ","_")
+        # Avoid colon in file names for vfat compatibility
+        self.title = self.title.replace(":","")
         self.date = time.strftime("%Y-%m-%d", time.localtime(pdt))
         year = time.strftime("%Y", time.localtime(pdt))
         month = time.strftime("%m", time.localtime(pdt))
@@ -142,13 +145,13 @@ class Program:
                     SUB_SUFFIX
         self.turl = "http://" + settings['username'] + ":" + \
                     settings['password'] + "@" + ASITE + "/feed/thumbnails/" + pid + ".jpg"
-        self.vfile = self.dir + "/" + ptit.replace(" ","_") + "_" + \
+        self.vfile = self.dir + "/" + self.title + "_" + \
                      self.date + "_" + pid + "." + filesuffix(settings['format'])
         self.vfile = self.vfile.encode(FILECHARSET)
-        self.sfile = self.dir + "/" + ptit.replace(" ","_") + "_" + \
+        self.sfile = self.dir + "/" + self.title + "_" + \
                      self.date + "_" + pid + "" + SUB_SUFFIX
         self.sfile = self.sfile.encode(FILECHARSET)
-        self.tfile = self.dir + "/" + ptit.replace(" ","_") + "_" + \
+        self.tfile = self.dir + "/" + self.title + "_" + \
                      self.date + "_" + pid + "" + THUMB_SUFFIX
         self.tfile = self.tfile.encode(FILECHARSET)
 
@@ -158,6 +161,16 @@ class Program:
         """
         try:
             return (urllib.urlopen(self.vurl).getcode() == 200)
+        except AttributeError:
+            print "Warning: could not check file availability"
+            return True
+
+    def sub_available(self):
+        """ 
+        Check subtitle availability using the HTTP response code
+        """
+        try:
+            return (urllib.urlopen(self.surl).getcode() == 200)
         except AttributeError:
             print "Warning: could not check file availability"
             return True
@@ -176,7 +189,7 @@ class Program:
         print self.label().encode(TERMCHARSET)
         if (os.path.exists(self.vfile)):
             sys.stdout.write("\r[" + BAR_WIDTH * '=' + '] (done)\n')
-        else:
+        elif subs_only == False:
             # Check that the file exists - encoding to various video formats
             # can take many hours.
             if not self.is_available():
@@ -196,18 +209,23 @@ class Program:
                 print "\nDownload interrupted"
                 exit(0)
         # Download subtitle file. Remove if empty.
-        if (not os.path.exists(self.sfile) and urllib.urlopen(self.surl).getcode() == 200):
-            try:
-                urllib.urlretrieve(self.surl, self.sfile + TMP_SUFFIX)
-                if (os.path.exists(self.sfile + TMP_SUFFIX)):
-                    shutil.move(self.sfile + TMP_SUFFIX, self.sfile)
-            except KeyboardInterrupt:
-                print "\nDownload interrupted"
-                exit(0)
-            if (os.stat(self.sfile).st_size == 0):
-                os.remove(self.sfile)
+        if (not os.path.exists(self.sfile)):
+            if not self.sub_available():
+                print "Warning: subtitle file not available."
+            else:
+                try:
+                    urllib.urlretrieve(self.surl, self.sfile + TMP_SUFFIX)
+                    if (os.path.exists(self.sfile + TMP_SUFFIX)):
+                        shutil.move(self.sfile + TMP_SUFFIX, self.sfile)
+                        if subs_only:
+                            print "Subtitle downloaded."
+                except KeyboardInterrupt:
+                    print "\nDownload interrupted"
+                    exit(0)
+                    if (os.stat(self.sfile).st_size == 0):
+                        os.remove(self.sfile)
         # Download thumbnail file
-        if (not os.path.exists(self.tfile) and getthumb and urllib.urlopen(self.turl).getcode() == 200):
+        if (not subs_only and not os.path.exists(self.tfile) and getthumb and urllib.urlopen(self.turl).getcode() == 200):
             try:
                 urllib.urlretrieve(self.turl, self.tfile + TMP_SUFFIX)
                 if (os.path.exists(self.tfile + TMP_SUFFIX)):
@@ -287,7 +305,12 @@ def usage():
     print "  --limit          download limit in kbytes/sec"
     print "  -n               maximum number of results to show"
     print "  -r --reverse     list in reverse order (new to old)"
+    print "  --subs-only      download only the subtitle file"
     print ""
+
+# Show version
+def version():
+    print "tvkaista-cli %s" % __version__
 
 # List available video formats.
 def show_format_info():
@@ -645,6 +668,7 @@ def main(argv):
     global DOWNLOAD_LIMIT
     global nmax
     global reverse
+    global subs_only
 
     timer = Timer()
     exp_settings = {}
@@ -653,13 +677,17 @@ def main(argv):
     try:
         opts, args = getopt.getopt(argv, "hvprf:u:p:d:n:", ["help", "verbose", \
                      "debug", "prompt", "reverse", "format=", "username=", \
-                     "password=", "downloaddir=", "limit="])
+                     "password=", "downloaddir=", "limit=", "subs-only", \
+                     "version"])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
     for opt, arg in opts:
         if opt in ("-h", "--help"):
             usage()
+            sys.exit()
+        if opt == "--version":
+            version()
             sys.exit()
         if opt in ("-f", "--format"):
             exp_settings['format'] = arg
@@ -675,6 +703,8 @@ def main(argv):
             debug = True
         if (opt == "--prompt"):
             prompt = True
+        if (opt == "--subs-only"):
+            subs_only = True
         if (opt == "--limit"):
             DOWNLOAD_LIMIT = 1024*int(arg)
         if opt in ("-n"):
