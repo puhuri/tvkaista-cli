@@ -23,7 +23,7 @@ __author__ = "Matti Pöllä"
 __copyright__ = "Copyright 2009-2010, Matti Pöllä"
 __license__ = "GPL"
 __email__ = "mpo@iki.fi"
-__version__ = "$Revision: 98 $"
+__version__ = "$Revision: 104 $"
 
 import urllib
 import urllib2
@@ -34,7 +34,10 @@ import sys
 import getopt
 import shutil
 import time
+import math
 import webbrowser
+import pytz
+import datetime
 # Tvkaista-cli currently depends on httplib2 but easy_install fails
 # to install httplib2 (resulting in HTTP error 404).
 try:
@@ -69,6 +72,8 @@ FILECHARSET = 'utf-8'
 TERMCHARSET = 'utf-8'
 
 ASITE = 'alpha.tvkaista.fi'
+TIMEZONE = pytz.timezone ("Europe/Helsinki")
+TIMEFORMAT = "%a, %d %b %Y %H:%M:%S +0000"
 
 # HTTP headers
 headers = {'Content-type': 'application/x-www-form-urlencoded'}
@@ -82,6 +87,8 @@ debug = False
 prompt = False
 show = False
 getthumb = True
+reverse = False
+nmax = False
 
 target = {}
 target['list'] = False
@@ -254,7 +261,7 @@ def usage():
     """
     Print instruction on how to use this program.
     """
-    print "Usage: tvkaista [-hvfupsd] command target"
+    print "Usage: tvkaista [options] command target"
     print ""
     print "Commands:"
     print " show              show programs (default)"
@@ -278,6 +285,8 @@ def usage():
     print "  -f               video format (iTunes/flv/h264/ts/help)"
     print "  -d               download directory"
     print "  --limit          download limit in kbytes/sec"
+    print "  -n               maximum number of results to show"
+    print "  -r --reverse     list in reverse order (new to old)"
     print ""
 
 # List available video formats.
@@ -433,8 +442,15 @@ def feedreader_alpha(feed):
     except(urllib2.HTTPError):
         print "HTTP 404 Error: " + feed
         exit(1)
+
     dom = minidom.parseString(content)
     items = dom.getElementsByTagName('item')
+    # Flip order if using "-r"
+    if reverse:
+        items.reverse()
+    # Limit number of result
+    if 0 < nmax < len(items):
+        items = items[-nmax:]
     ret = []
     for i in items:
         ptit = i.getElementsByTagName('title')[0].childNodes[0]\
@@ -445,16 +461,22 @@ def feedreader_alpha(feed):
         except:
             plen = 0
         plin = i.getElementsByTagName('link')[0].childNodes[0].nodeValue
-        # Tvkaista attribute 'pubDate is in UTF; convert it to EET
-        pdt = time.mktime(time.strptime(i.getElementsByTagName('pubDate')[0]\
-	      .childNodes[0].nodeValue, "%a, %d %b %Y %H:%M:%S +0000")) + 3*60*60
+        # Tvkaista attribute 'pubDate is in UTF; convert it to EET using pytz
+        timestr = i.getElementsByTagName('pubDate')[0].childNodes[0].nodeValue
+        tvkaistatime = datetime.datetime.strptime(timestr, TIMEFORMAT)
+        tvkaistatime = tvkaistatime.replace(tzinfo=pytz.utc)
+        pdt = time.mktime(tvkaistatime.astimezone(TIMEZONE).timetuple())
+
         pid = re.compile('http://alpha.tvkaista.fi/search/[?]findid=(\d+)')\
 	      .findall(plin)[0]
         program = Program(pid, ptit, plen, pdt)
         if (prompt and not program.downloaded()):
             print program.label().encode(TERMCHARSET)
-            if (prompt and raw_input('Download (Y/n) ') == 'n'):
-                continue
+            try:
+                if (prompt and raw_input('Download (Y/n) ') == 'n'):
+                    continue
+            except KeyboardInterrupt:
+                exit(0)
         ret.append(program)
     dom.unlink()
     return ret
@@ -533,8 +555,9 @@ def progressbar(count, blockSize, totalSize):
     if (count & PROGRESS_DELAY_BITMASK != 0):
         return
     if (totalSize > 0):
-        percent = int(count * blockSize * 100 / totalSize)
-        blocks = int(count * blockSize * BAR_WIDTH / totalSize)
+        mcount = math.floor(totalSize / blockSize)
+        percent = int(math.ceil(100 * count / mcount))
+        blocks = int(math.ceil(BAR_WIDTH * count / mcount))
     else:
         percent = 0
         blocks = 0
@@ -620,15 +643,17 @@ def main(argv):
     global timer
     global target
     global DOWNLOAD_LIMIT
+    global nmax
+    global reverse
 
     timer = Timer()
     exp_settings = {}
 
     # Processing of command line options using getopt.
     try:
-        opts, args = getopt.getopt(argv, "hvpf:u:p:d:", ["help", "verbose", \
-                     "debug", "prompt", "format=", "username=", "password=", \
-                     "downloaddir=", "limit="])
+        opts, args = getopt.getopt(argv, "hvprf:u:p:d:n:", ["help", "verbose", \
+                     "debug", "prompt", "reverse", "format=", "username=", \
+                     "password=", "downloaddir=", "limit="])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -652,6 +677,14 @@ def main(argv):
             prompt = True
         if (opt == "--limit"):
             DOWNLOAD_LIMIT = 1024*int(arg)
+        if opt in ("-n"):
+            try:
+                nmax = int(arg)
+            except ValueError:
+                print "Invalid argument for -n"
+                exit(1)
+        if opt in ("-r", "--reverse"):
+            reverse = True
 
     if len(args) == 0:
         usage()
@@ -805,6 +838,7 @@ def main(argv):
         exit(0)
 
     targets = feedreader_alpha(feed)
+
     if len(targets) == 0:
         print "No targets found."
         exit(0)
