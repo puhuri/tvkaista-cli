@@ -23,7 +23,7 @@ __author__ = "Matti Pöllä"
 __copyright__ = "Copyright 2009-2010, Matti Pöllä"
 __license__ = "GPL"
 __email__ = "mpo@iki.fi"
-__version__ = "$Revision: 94 $"
+__version__ = "$Revision: 98 $"
 
 import urllib
 import urllib2
@@ -34,8 +34,15 @@ import sys
 import getopt
 import shutil
 import time
-import httplib2
 import webbrowser
+# Tvkaista-cli currently depends on httplib2 but easy_install fails
+# to install httplib2 (resulting in HTTP error 404).
+try:
+    import httplib2
+except:
+    print "httplib2 is required to run this script. On Debian-based" 
+    print "systems run 'sudo apt-get install python-httplib2'."
+    exit(1)
 
 from math import floor
 from xml.dom import minidom
@@ -92,6 +99,7 @@ mode['seasondel'] = False
 mode['get'] = False
 mode['stream'] = False
 mode['play'] = False
+mode['summary'] = False
 
 class Timer:
     """
@@ -225,6 +233,9 @@ class Program:
         
     def getid(self):
         return self.idn
+
+    def getsize(self):
+        return self.length
 
 def cursor_hide():
     """
@@ -418,6 +429,7 @@ def feedreader_alpha(feed):
     urllib2.install_opener(opener)
     try:
         content = urllib2.urlopen(feed).read()
+        #print content
     except(urllib2.HTTPError):
         print "HTTP 404 Error: " + feed
         exit(1)
@@ -433,8 +445,9 @@ def feedreader_alpha(feed):
         except:
             plen = 0
         plin = i.getElementsByTagName('link')[0].childNodes[0].nodeValue
+        # Tvkaista attribute 'pubDate is in UTF; convert it to EET
         pdt = time.mktime(time.strptime(i.getElementsByTagName('pubDate')[0]\
-	      .childNodes[0].nodeValue, "%a, %d %b %Y %H:%M:%S +0000"))
+	      .childNodes[0].nodeValue, "%a, %d %b %Y %H:%M:%S +0000")) + 3*60*60
         pid = re.compile('http://alpha.tvkaista.fi/search/[?]findid=(\d+)')\
 	      .findall(plin)[0]
         program = Program(pid, ptit, plen, pdt)
@@ -500,7 +513,7 @@ def dataformat(b):
     b = b / 1024
     if (b < 1024):
         return "%.2f MiB" % b
-    b = b / 1024
+    b = float(float(b) / 1024.0)
     return "%.2f GiB" % b
 
 def timeformat(s):
@@ -575,7 +588,26 @@ def play_url_suffix_alpha(format):
       'flv' :   '/4/1000000',
       'h264':   '/3/2000000',
       'ts':     '/0/8000000'
-    }[format] 
+    }[format]
+
+def print_summary():
+    plurl = 'http://%s/feed/playlist/%s.rss' % \
+            (ASITE, formatstring(settings['format']))
+    dl_togo = 0
+    dl_done = 0
+    plcount = 0
+    for i in feedreader_alpha(plurl):
+        plcount += 1
+        if i.downloaded():
+            dl_done += i.getsize()
+        else:
+            dl_togo += i.getsize()
+    if dl_togo == 0:
+        print "Download complete."
+    else:
+        perc = (100 * float(dl_done)/float(dl_done+dl_togo))
+        print "Playlist: %s to be downloaded (%02d %% of %s complete) " % \
+        (dataformat(dl_togo), perc, dataformat(dl_togo + dl_done))
 
 # Main program
 def main(argv):
@@ -641,12 +673,12 @@ def main(argv):
     target_ids = re.findall('([0-9]{6,7})', " ".join(args))
 
     # No target given
-    if len(args) == 0:
+    if len(args) == 0 and not mode['summary']:
         usage()
         exit(0)
 
     # Parse target
-    if args[0] in target.keys():
+    if not mode['summary'] and args[0] in target.keys():
         target[args[0]] = True
         args.pop(0)
         if debug:
@@ -658,8 +690,10 @@ def main(argv):
             print "TARGET: IDs " + ",".join(target_ids)
     # Default to search
     else:
+        if debug:
+            print "TARGET: search (default)"
         target['search'] = True
-        if args[0] == 'search':
+        if not mode['summary'] and args[0] == 'search':
             args.pop(0)
     search_terms = " ".join(args)
     if debug:
@@ -691,7 +725,11 @@ def main(argv):
     if sum(mode.values()) > 1:
         print "Only one of show/get/stream/play/add/del is allowed."
         sys.exit(0)
-        
+
+    if mode['summary']:
+        print_summary()
+        exit(0)
+
     # If no mode if specified, select 'show'
     elif sum(mode.values()) == 0:
         mode['show'] = True
@@ -700,7 +738,7 @@ def main(argv):
         print "Only one of target is allowed."
         sys.exit(0)
 
-    # Add/del mode
+    # Add/del using program id numbers
     if mode['add'] and len(target_ids) > 0:
         if debug:
             print "ADD: " + " ".join(target_ids)
@@ -712,6 +750,26 @@ def main(argv):
         [editlist_alpha("del", t) for t in target_ids]
         exit(0)
         
+    # Add to playlist using search terms
+    if mode['add'] and len(target_ids) == 0:
+        plurl = 'http://%s/feed/playlist/%s.rss' % \
+                (ASITE, formatstring(settings['format']))
+        plids = []
+        [plids.append(i.getid()) for i in feedreader_alpha(plurl)]
+        if debug:
+            print "ADD: (search terms) ".join(search_terms)
+        feed = "http://" + ASITE + "/feed/search/title/" + \
+               urllib.urlencode({'':search_terms})[1:] + "/" + \
+               formatstring(settings['format'])+".rss"
+        targets = feedreader_alpha(feed)    
+        for t in targets:
+            if t.getid() not in plids:
+                print t.longlabel().encode(TERMCHARSET) 
+                if raw_input('Add to list (Y/n) ') in ['n', 'e']:
+                    continue
+                editlist_alpha("add", t.getid())
+        exit(0)
+
     # Seasonadd/seasondel mode
     if mode['seasonadd'] or mode['seasondel']:
         print "Not implemented yet."
