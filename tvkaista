@@ -20,10 +20,10 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 __author__ = "Matti Pöllä"
-__copyright__ = "Copyright 2009-2010, Matti Pöllä"
+__copyright__ = "Copyright 2009-2011, Matti Pöllä"
 __license__ = "GPL"
 __email__ = "mpo@iki.fi"
-__version__ = "0.66"
+__version__ = "0.67"
 
 import urllib
 import urllib2
@@ -733,7 +733,7 @@ def main(argv):
             print "MODE: show"
 
     # Look for program ID numbers as arguments
-    target_ids = re.findall('([0-9]{6,7})', " ".join(args))
+    target_ids = re.findall('([0-9]{6,8})', " ".join(args))
 
     # No target given
     if len(args) == 0 and not mode['summary']:
@@ -807,7 +807,7 @@ def main(argv):
             print "ADD: " + " ".join(target_ids)
         [editlist("add", t) for t in target_ids]
         exit(0)
-    if mode['del']:
+    if mode['del'] and len(target_ids) > 0:
         if debug:
             print "DEL: " + " ".join(target_ids)
         [editlist("del", t) for t in target_ids]
@@ -863,7 +863,7 @@ def main(argv):
 
     # Exception: program id numbers have been specified without
     # an action to perform.  
-    if len(target_ids) > 0 and mode['show']:
+    if len(target_ids) > 0 and (not mode['add'] or not mode['del']):
         print "Please specify what to do with program id numbers (add/del)."
         exit(0)
 
