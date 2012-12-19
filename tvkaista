@@ -6,6 +6,7 @@
 # http://code.google.com/p/tvkaista-cli/
 #
 # Copyright (c) 2009-2011 Matti Pöllä
+#               2012      Markus Peuhkuri
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,11 +20,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__author__ = "Matti Pöllä"
-__copyright__ = "Copyright 2009-2011, Matti Pöllä"
+__author__ = "Markus Peuhkuri"
+__copyright__ = "Copyright 2012, Markus Peuhkuri"
 __license__ = "GPL"
-__email__ = "mpo@iki.fi"
-__version__ = "0.67"
+__email__ = "puhuri@iki.fi"
+__version__ = "0.70"
 
 import urllib
 import urllib2
@@ -38,6 +39,8 @@ import math
 import webbrowser
 import pytz
 import datetime
+import signal
+from random import shuffle
 # Tvkaista-cli currently depends on httplib2 but easy_install fails
 # to install httplib2 (resulting in HTTP error 404).
 try:
@@ -61,7 +64,7 @@ THUMB_SUFFIX = '.jpg'
 # Video player to stream with
 VPLAYER = 'mplayer'
 # Progress bar width
-BAR_WIDTH = 30
+BAR_WIDTH = 25
 # Progress bar delay bitmask (sensible values=7,15,31,63)
 PROGRESS_DELAY_BITMASK = 15
 # Default download limit in bytes/sec, 0=no limit
@@ -76,7 +79,7 @@ TIMEZONE = pytz.timezone ("Europe/Helsinki")
 TIMEFORMAT = "%a, %d %b %Y %H:%M:%S +0000"
 
 # HTTP headers
-headers = {'Content-type': 'application/x-www-form-urlencoded'}
+headers = {'Content-type': 'application/x-www-form-urlencoded', 'User-Agent': 'tvkaista-cli-puhuri/' + __version__ }
 http = httplib2.Http()
 
 settings = {}
@@ -125,12 +128,13 @@ class Program:
     """
     The Programm class encapsulates a downloadable item.
     """
-    def __init__(self, pid, ptit, plen, pdt):
+    def __init__(self, pid, ptit, plen, pdt, pdesc):
         self.idn = pid
         self.length = int(plen)
+        self.desc = ptit + "\n" + pdesc;
         self.title = ptit.replace(" ","_")
         # Avoid colon in file names for vfat compatibility
-        self.title = self.title.replace(":","")
+        self.title = self.title.replace(":","").replace("/","_")
         self.date = time.strftime("%Y-%m-%d", time.localtime(pdt))
         year = time.strftime("%Y", time.localtime(pdt))
         month = time.strftime("%m", time.localtime(pdt))
@@ -148,6 +152,9 @@ class Program:
         self.vfile = self.dir + "/" + self.title + "_" + \
                      self.date + "_" + pid + "." + filesuffix(settings['format'])
         self.vfile = self.vfile.encode(FILECHARSET)
+        self.dfile = self.dir + "/" + self.title + "_" + \
+                     self.date + "_" + pid + ".txt" 
+        self.dfile = self.dfile.encode(FILECHARSET)
         self.sfile = self.dir + "/" + self.title + "_" + \
                      self.date + "_" + pid + "" + SUB_SUFFIX
         self.sfile = self.sfile.encode(FILECHARSET)
@@ -186,12 +193,12 @@ class Program:
             except OSError:
                 print "Could not write to %s" % self.dir
                 exit(1)
-        print self.label().encode(TERMCHARSET)
         if (os.path.exists(self.vfile)):
-            sys.stdout.write("\r[" + BAR_WIDTH * '=' + '] (done)\n')
+            pass
         elif subs_only == False:
             # Check that the file exists - encoding to various video formats
             # can take many hours.
+            print self.label().encode(TERMCHARSET)
             if not self.is_available():
                 print "File not available (try \"-f ts\" for raw MPEG stream)."
                 return
@@ -200,6 +207,8 @@ class Program:
                 timer.reset()
                 urllib.urlretrieve(self.vurl, self.vfile + TMP_SUFFIX, \
                 reporthook=progressbar)
+                # got all, cancel alarm
+                signal.alarm(0)
                 cursor_unhide()
                 if (os.path.exists(self.vfile + TMP_SUFFIX)):
                     shutil.move(self.vfile+TMP_SUFFIX, self.vfile)
@@ -208,17 +217,21 @@ class Program:
                 cursor_unhide()
                 print "\nDownload interrupted"
                 exit(0)
+            except IOError:
+                cursor_unhide()
+                print "\nIOError or TimeOut"
         # Download subtitle file. Remove if empty.
-        if (not os.path.exists(self.sfile)):
+        #if (not os.path.exists(self.sfile)):
+        if (False):
             if not self.sub_available():
-                print "Warning: subtitle file not available."
+                pass
+                #print "Warning: subtitle file not available."
             else:
                 try:
                     urllib.urlretrieve(self.surl, self.sfile + TMP_SUFFIX)
                     if (os.path.exists(self.sfile + TMP_SUFFIX)):
                         shutil.move(self.sfile + TMP_SUFFIX, self.sfile)
-                        if subs_only:
-                            print "Subtitle downloaded."
+                        print "Subtitle downloaded."
                 except KeyboardInterrupt:
                     print "\nDownload interrupted"
                     exit(0)
@@ -233,6 +246,14 @@ class Program:
             except KeyboardInterrupt:
                 print "\nDownload interrupted"
                 exit(0)
+        if (not subs_only and not os.path.exists(self.dfile)):
+            try:
+                f = open(self.dfile, "w")
+                f.write(self.desc.encode(FILECHARSET))
+                f.close()
+            except OSError:
+                print "Could not write to %s" % self.dfile
+                exit(1)
 
 
     def downloaded(self):
@@ -458,6 +479,7 @@ def feedreader(feed):
     passman.add_password(None, feed, settings['username'], \
 			 settings['password'])
     opener = urllib2.build_opener(urllib2.HTTPBasicAuthHandler(passman))
+    opener.addheaders = [('User-agent', 'tvkaista-cli/' + __version__)]
     urllib2.install_opener(opener)
     try:
         content = urllib2.urlopen(feed).read()
@@ -484,6 +506,10 @@ def feedreader(feed):
         except:
             plen = 0
         plin = i.getElementsByTagName('link')[0].childNodes[0].nodeValue
+	try:
+            pdesc = i.getElementsByTagName('description')[0].childNodes[0].nodeValue
+        except:
+	    pdesc = ptit + ' (description missing)'
         # Tvkaista attribute 'pubDate is in UTF; convert it to EET using pytz
         timestr = i.getElementsByTagName('pubDate')[0].childNodes[0].nodeValue
         tvkaistatime = datetime.datetime.strptime(timestr, TIMEFORMAT)
@@ -492,7 +518,7 @@ def feedreader(feed):
 
         pid = re.compile('http://www.tvkaista.fi/search/[?]findid=(\d+)')\
 	      .findall(plin)[0]
-        program = Program(pid, ptit, plen, pdt)
+        program = Program(pid, ptit, plen, pdt, pdesc)
         if (prompt and not program.downloaded()):
             print program.label().encode(TERMCHARSET)
             try:
@@ -575,6 +601,8 @@ def progressbar(count, blockSize, totalSize):
     """
     Progress bar function for monitoring downloads.
     """
+    # should be called every 60 minutes minimum
+    signal.alarm(3600)
     if (count & PROGRESS_DELAY_BITMASK != 0):
         return
     if (totalSize > 0):
@@ -655,6 +683,16 @@ def print_summary():
         print "Playlist: %s to be downloaded (%02d %% of %s complete) " % \
         (dataformat(dl_togo), perc, dataformat(dl_togo + dl_done))
 
+# interrupt handler
+def timeouted(signum, frame):
+    print 'Signal handler called with signal', signum
+    if signum == signal.SIGALRM:
+        raise IOError("System timeout!")    
+    if signum == signal.SIGUSR1:
+        DOWNLOAD_LIMIT = 200
+    if signum == signal.SIGUSR2:
+        DOWNLOAD_LIMIT = 0
+
 # Main program
 def main(argv):
 
@@ -672,13 +710,14 @@ def main(argv):
 
     timer = Timer()
     exp_settings = {}
+    rshuffle = False
 
     # Processing of command line options using getopt.
     try:
-        opts, args = getopt.getopt(argv, "hvprf:u:p:d:n:", ["help", "verbose", \
+        opts, args = getopt.getopt(argv, "hvprf:u:p:d:n:R", ["help", "verbose", \
                      "debug", "prompt", "reverse", "format=", "username=", \
                      "password=", "downloaddir=", "limit=", "subs-only", \
-                     "version"])
+                     "random", "version"])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -715,6 +754,8 @@ def main(argv):
                 exit(1)
         if opt in ("-r", "--reverse"):
             reverse = True
+        if opt in ("-R", "--random"):
+            rshuffle = True
 
     if len(args) == 0:
         usage()
@@ -761,6 +802,10 @@ def main(argv):
     search_terms = " ".join(args)
     if debug:
         print "TARGET: search \"" + search_terms + "\""
+
+    signal.signal(signal.SIGALRM, timeouted)
+    signal.signal(signal.SIGUSR1, timeouted)
+    signal.signal(signal.SIGUSR2, timeouted)
 
     # First see whether a configuration file is available.
     conffile = getconffile()
@@ -872,6 +917,9 @@ def main(argv):
     if len(targets) == 0:
         print "No targets found."
         exit(0)
+
+    if rshuffle == True:
+        shuffle(targets)
 
     # Stream mode
     if mode['stream']:
